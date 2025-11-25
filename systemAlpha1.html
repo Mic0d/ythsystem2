@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Checklist — On-Demand ETA</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f1320; --panel:#171b2a; --muted:#a8b0cc; --accent:#4f7cff;
+      --danger:#ff5f73; --success:#35c46a; --panel-border:#2a3350;
+      --est-bg:#243056; --est-ready:#2e7d52;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+      background:var(--bg); color:#e7ecff; margin:0; padding:40px;
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+
+    .container{
+      max-width:760px; margin:auto; background:var(--panel);
+      border:1px solid var(--panel-border); border-radius:12px; padding:20px;
+      box-shadow:0 8px 24px rgba(0,0,0,.35);
+    }
+
+    .title{text-align:center; margin-bottom:8px}
+    h1{margin:0; font-size:26px}
+    h2{margin:4px 0 16px; font-size:14px; color:var(--muted); font-weight:500}
+
+    .controls{display:flex; justify-content:center; gap:8px; flex-wrap:wrap; margin-bottom:16px}
+
+    /* Buttons */
+    .btn{
+      -webkit-appearance:none; appearance:none;
+      display:inline-flex; align-items:center; justify-content:center;
+      gap:8px; padding:10px 16px; border-radius:10px; border:0;
+      cursor:pointer; color:#fff; background:var(--accent);
+      font-weight:600; font-size:15px; line-height:1; user-select:none;
+      position:relative; z-index:10000; box-shadow:0 2px 6px rgba(0,0,0,0.25);
+      pointer-events:auto;
+    }
+    .btn.secondary{background:#2a3350}
+    .btn.danger{background:var(--danger)}
+    .btn.success{background:var(--success)}
+
+    .est{display:inline-block; margin:0 auto 14px; padding:8px 14px; border-radius:10px; background:var(--est-bg); color:#e7ecff; font-weight:600}
+    .est.ready{background:var(--est-ready)}
+
+    .list{padding:8px 4px 0}
+    .item{
+      display:grid; grid-template-columns:44px 1fr; align-items:center; gap:12px;
+      padding:8px 6px; border-radius:10px; position:relative; min-height:44px;
+      z-index:1; pointer-events:auto;
+    }
+    .item:hover{background:rgba(255,255,255,0.03)}
+
+    .cb-wrap{display:flex; align-items:center; justify-content:center; width:44px; height:44px; position:relative; z-index:1}
+    .cb-wrap label{display:flex; align-items:center; justify-content:center; width:36px; height:36px; cursor:pointer; user-select:none}
+    .cb-wrap input[type="checkbox"]{width:22px; height:22px; margin:0; padding:0; cursor:pointer; z-index:2; accent-color:#35c46a}
+
+    .item input[type="text"]{
+      width:100%; background:transparent; border:none; border-bottom:1px solid var(--panel-border);
+      color:#e7ecff; font-size:16px; padding:6px 8px; min-height:36px;
+    }
+    .item input[type="text"]:focus{outline:none; border-bottom-color:var(--accent)}
+
+    .placeholder{opacity:.6; padding:10px}
+
+    /* Modal overlay: fixed to viewport and centers content */
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.45);
+      z-index: 20000;
+      pointer-events: none;
+    }
+    .modal[style*="display: flex"], .modal[aria-hidden="false"] {
+      display: flex !important;
+      pointer-events: auto !important;
+    }
+    .modal-content {
+      max-width: 92vw;
+      width: 360px;
+      margin: 0 12px;
+      box-sizing: border-box;
+      border-radius: 12px;
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    }
+    .modal-row{display:flex; flex-direction:column; gap:8px; margin:8px 0 12px}
+    .modal-row input{background:#121624; color:#e7ecff; border:1px solid var(--panel-border); border-radius:8px; padding:8px 10px; font-size:14px}
+
+    /* Defensive: ensure no transforms break fixed positioning */
+    html, body, .container, .controls, .list, .item {
+      transform: none !important;
+      -webkit-transform: none !important;
+    }
+
+    @media (max-width:420px){
+      .modal-content { width: calc(100% - 32px); max-width: calc(100% - 32px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="title">
+      <h1 id="checklistTitle">Untitled</h1>
+      <h2 id="checklistSubtitle"></h2>
+    </div>
+
+    <div style="text-align:center;">
+      <span id="estBox" class="est">Estimated time: &lt;1 min</span>
+      <div class="controls" style="margin-top:8px;">
+        <button id="updateEtaBtn" class="btn secondary">Update ETA</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="newTabBtn" class="btn success">New</button>
+      <button id="prevBtn" class="btn secondary">Prev</button>
+      <button id="nextBtn" class="btn secondary">Next</button>
+      <button id="deleteTabBtn" class="btn danger">Delete tab</button>
+    </div>
+
+    <div class="controls">
+      <button id="addItemBtn" class="btn">+ Add item</button>
+      <button id="clearBtn" class="btn danger">Clear all items</button>
+    </div>
+
+    <div id="list" class="list" role="list"></div>
+    <div class="status" id="status">Connecting…</div>
+  </div>
+
+  <!-- New Tab Modal -->
+  <div id="newTabModal" class="modal" aria-hidden="true" style="display:none">
+    <div class="modal-content">
+      <h3>Create new tab</h3>
+      <div class="modal-row">
+        <label for="newTabName">Name</label>
+        <input id="newTabName" type="text" placeholder="e.g., Alex Chen" />
+      </div>
+      <div class="modal-row">
+        <label for="newTabPhone">Phone number</label>
+        <input id="newTabPhone" type="text" placeholder="e.g., 604-555-1234" />
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button id="confirmNewTab" class="btn">Create</button>
+        <button id="cancelNewTab" class="btn secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clear Items Modal -->
+  <div id="clearModal" class="modal" aria-hidden="true" style="display:none">
+    <div class="modal-content">
+      <h3>Delete all items?</h3>
+      <p>This will remove every line in the current tab.</p>
+      <div style="display:flex; gap:8px;">
+        <button id="confirmClear" class="btn danger">Yes, delete</button>
+        <button id="cancelClear" class="btn secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Tab Modal -->
+  <div id="deleteTabModal" class="modal" aria-hidden="true" style="display:none">
+    <div class="modal-content">
+      <h3 id="deleteTabTitle">Delete tab</h3>
+      <p id="deleteTabMessage">Are you sure you want to delete this tab?</p>
+      <div style="display:flex; gap:8px;">
+        <button id="confirmDeleteTab" class="btn danger">Delete</button>
+        <button id="cancelDeleteTab" class="btn secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
+    import {
+      getFirestore,
+      collection,
+      doc,
+      addDoc,
+      updateDoc,
+      deleteDoc,
+      getDocs,
+      onSnapshot,
+      query,
+      orderBy,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+
+    // Firebase config (unchanged)
+    const firebaseConfig = {
+      apiKey: "AIzaSyA09dW-L-RCS7cHqnU6Wvnfp9fublURBKE",
+      authDomain: "ythsy-a0481.firebaseapp.com",
+      projectId: "ythsy-a0481",
+      storageBucket: "ythsy-a0481.firebasestorage.app",
+      messagingSenderId: "443237355170",
+      appId: "1:443237355170:web:69ab5279625b2bd54a51fb"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const els = {
+      title: document.getElementById("checklistTitle"),
+      subtitle: document.getElementById("checklistSubtitle"),
+      estBox: document.getElementById("estBox"),
+      updateEtaBtn: document.getElementById("updateEtaBtn"),
+      list: document.getElementById("list"),
+      status: document.getElementById("status"),
+      newTabBtn: document.getElementById("newTabBtn"),
+      prevBtn: document.getElementById("prevBtn"),
+      nextBtn: document.getElementById("nextBtn"),
+      deleteTabBtn: document.getElementById("deleteTabBtn"),
+      addItemBtn: document.getElementById("addItemBtn"),
+      clearBtn: document.getElementById("clearBtn"),
+      newTabModal: document.getElementById("newTabModal"),
+      newTabName: document.getElementById("newTabName"),
+      newTabPhone: document.getElementById("newTabPhone"),
+      confirmNewTab: document.getElementById("confirmNewTab"),
+      cancelNewTab: document.getElementById("cancelNewTab"),
+      clearModal: document.getElementById("clearModal"),
+      confirmClear: document.getElementById("confirmClear"),
+      cancelClear: document.getElementById("cancelClear"),
+      deleteTabModal: document.getElementById("deleteTabModal"),
+      deleteTabTitle: document.getElementById("deleteTabTitle"),
+      deleteTabMessage: document.getElementById("deleteTabMessage"),
+      confirmDeleteTab: document.getElementById("confirmDeleteTab"),
+      cancelDeleteTab: document.getElementById("cancelDeleteTab"),
+    };
+
+    let tabs = [];
+    let currentIndex = -1;
+    let itemsUnsub = null;
+    let checklistsUnsub = null;
+    let pendingSelectId = null;
+
+    // Modal helpers
+    function openModal(el) {
+      if (!el) return;
+      el.style.display = "flex";
+      el.setAttribute("aria-hidden", "false");
+      const focusable = el.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (focusable) focusable.focus();
+    }
+    function closeModal(el) {
+      if (!el) return;
+      el.style.display = "none";
+      el.setAttribute("aria-hidden", "true");
+    }
+
+    // ETA helper: compute minutes from unchecked items (1 unchecked = 1 minute)
+    function computeEtaMinutesFromItems(items) {
+      const unchecked = items.filter(it => !it.checked).length;
+      return unchecked; // 1 unchecked = 1 minute
+    }
+    function renderEtaFromMinutes(mins) {
+      if (mins <= 0) {
+        els.estBox.classList.remove("ready");
+        els.estBox.textContent = "Estimated time: <1 min";
+      } else {
+        els.estBox.classList.remove("ready");
+        els.estBox.textContent = `Estimated time: ${mins} min`;
+      }
+    }
+
+    // Auth
+    signInAnonymously(auth).catch(err => {
+      console.error("Auth error:", err);
+      els.status.textContent = "Auth error — enable Anonymous in Firebase Authentication";
+    });
+
+    onAuthStateChanged(auth, user => {
+      if (user) {
+        els.status.textContent = "Connected";
+        subscribeChecklists();
+      }
+    });
+
+    // Subscribe to checklists (tabs)
+    function subscribeChecklists() {
+      if (checklistsUnsub) checklistsUnsub();
+      const q = query(collection(db, "checklists"), orderBy("createdAt", "asc"));
+      checklistsUnsub = onSnapshot(q, snap => {
+        const nextTabs = [];
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          nextTabs.push({
+            id: docSnap.id,
+            name: d.name || "Untitled",
+            phone: d.phone || ""
+          });
+        });
+        tabs = nextTabs;
+
+        if (pendingSelectId) {
+          const idx = tabs.findIndex(t => t.id === pendingSelectId);
+          if (idx !== -1) {
+            showTab(idx);
+            pendingSelectId = null;
+            return;
+          }
+        }
+
+        if (currentIndex === -1 && tabs.length > 0) showTab(0);
+        else if (tabs.length > 0) {
+          const currentId = tabs[currentIndex]?.id;
+          const idx = tabs.findIndex(t => t.id === currentId);
+          if (idx !== -1) showTab(idx);
+          else showTab(0);
+        } else {
+          currentIndex = -1;
+          els.title.textContent = "Untitled";
+          els.subtitle.textContent = "";
+          els.estBox.classList.remove("ready");
+          els.estBox.textContent = "Estimated time: <1 min";
+          els.list.innerHTML = "<div class='placeholder'>No tabs yet — create one.</div>";
+          if (itemsUnsub) itemsUnsub();
+        }
+      }, err => console.error("Checklists snapshot error:", err));
+    }
+
+    function showTab(index) {
+      if (index < 0 || index >= tabs.length) return;
+      currentIndex = index;
+      const tab = tabs[index];
+      els.title.textContent = tab.name || "Untitled";
+      els.subtitle.textContent = tab.phone || "";
+      // Reset ETA display when switching tabs (user must press Update ETA)
+      els.estBox.classList.remove("ready");
+      els.estBox.textContent = "Estimated time: <1 min";
+      subscribeItems(tab.id);
+    }
+
+    // Subscribe to items for a checklist (no automatic ETA updates)
+    function subscribeItems(checklistId) {
+      if (itemsUnsub) itemsUnsub();
+      const itemsCol = collection(db, "checklists", checklistId, "items");
+      const qItems = query(itemsCol, orderBy("createdAt", "asc"));
+      itemsUnsub = onSnapshot(qItems, snap => {
+        const items = [];
+        snap.forEach(ds => items.push({ id: ds.id, ...ds.data() }));
+
+        els.list.innerHTML = items.length === 0 ? "<div class='placeholder'>No items — add one.</div>" : "";
+        items.forEach(it => renderItem(checklistId, it));
+
+        // cache latest items for this tab (used by Update ETA button)
+        const idx = tabs.findIndex(t => t.id === checklistId);
+        if (idx !== -1) tabs[idx].latestItems = items;
+      }, err => console.error("Items snapshot error:", err));
+    }
+
+    // Render item (label + checkbox + text)
+    function renderItem(checklistId, it) {
+      const row = document.createElement("div");
+      row.className = "item";
+      row.dataset.id = it.id;
+
+      const cbWrap = document.createElement("div");
+      cbWrap.className = "cb-wrap";
+
+      const cbLabel = document.createElement("label");
+      const cbId = `cb-${it.id}`;
+      cbLabel.setAttribute("for", cbId);
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.id = cbId;
+      cb.checked = !!it.checked;
+      cb.setAttribute("aria-label", "Mark item complete");
+
+      cbLabel.appendChild(cb);
+      cbWrap.appendChild(cbLabel);
+
+      const text = document.createElement("input");
+      text.type = "text";
+      text.value = it.text || "";
+      text.placeholder = "Type to edit…";
+
+      cb.addEventListener("change", async (e) => {
+        const checked = e.target.checked;
+        cb.disabled = true;
+        try {
+          await updateDoc(doc(db, "checklists", checklistId, "items", it.id), { checked });
+        } catch (err) {
+          console.error("Checkbox update failed:", err);
+          cb.checked = !checked;
+        } finally {
+          cb.disabled = false;
+        }
+      });
+
+      text.addEventListener("blur", async () => {
+        try {
+          const value = text.value.trim();
+          await updateDoc(doc(db, "checklists", checklistId, "items", it.id), { text: value });
+        } catch (err) {
+          console.error("Update text error:", err);
+        }
+      });
+
+      text.addEventListener("keydown", async (e) => {
+        if (e.key === "Backspace" && text.value === "") {
+          e.preventDefault();
+          try {
+            await deleteDoc(doc(db, "checklists", checklistId, "items", it.id));
+          } catch (err) {
+            console.error("Delete item error:", err);
+          }
+        }
+      });
+
+      row.appendChild(cbWrap);
+      row.appendChild(text);
+      els.list.appendChild(row);
+    }
+
+    // Update ETA button: compute from current items (no writes)
+    els.updateEtaBtn.addEventListener("click", async () => {
+      if (currentIndex === -1 || tabs.length === 0) return;
+      const tab = tabs[currentIndex];
+      const checklistId = tab.id;
+
+      try {
+        // Use cached items if available to avoid an extra read
+        const cached = tab.latestItems;
+        let items = [];
+        if (Array.isArray(cached)) {
+          items = cached;
+        } else {
+          // fallback: fetch items once
+          const itemsCol = collection(db, "checklists", checklistId, "items");
+          const snap = await getDocs(itemsCol);
+          snap.forEach(ds => items.push({ id: ds.id, ...ds.data() }));
+        }
+
+        const mins = computeEtaMinutesFromItems(items);
+        renderEtaFromMinutes(mins);
+      } catch (err) {
+        console.error("Update ETA error:", err);
+      }
+    });
+
+    // New Tab modal flow
+    function openNewTabModal() { els.newTabName.value = ""; els.newTabPhone.value = ""; openModal(els.newTabModal); }
+    function closeNewTabModal() { closeModal(els.newTabModal); }
+
+    els.newTabBtn.addEventListener("click", openNewTabModal);
+    els.cancelNewTab.addEventListener("click", closeNewTabModal);
+
+    els.confirmNewTab.addEventListener("click", async () => {
+      const name = els.newTabName.value.trim();
+      const phone = els.newTabPhone.value.trim();
+      els.newTabName.style.borderColor = name ? "#2a3350" : "#ff5f73";
+      els.newTabPhone.style.borderColor = phone ? "#2a3350" : "#ff5f73";
+      if (!name || !phone) return;
+
+      try {
+        const ref = await addDoc(collection(db, "checklists"), {
+          name, phone, createdAt: serverTimestamp()
+        });
+        pendingSelectId = ref.id;
+        closeNewTabModal();
+      } catch (err) {
+        console.error("Create tab error:", err);
+      }
+    });
+
+    // Prev / Next navigation
+    els.prevBtn.addEventListener("click", () => {
+      if (tabs.length === 0) return;
+      const next = (currentIndex - 1 + tabs.length) % tabs.length;
+      showTab(next);
+    });
+    els.nextBtn.addEventListener("click", () => {
+      if (tabs.length === 0) return;
+      const next = (currentIndex + 1) % tabs.length;
+      showTab(next);
+    });
+
+    // Add item
+    els.addItemBtn.addEventListener("click", async () => {
+      if (tabs.length === 0) { openNewTabModal(); return; }
+      if (currentIndex === -1) showTab(0);
+      const checklistId = tabs[currentIndex].id;
+      const itemsCol = collection(db, "checklists", checklistId, "items");
+      try {
+        const ref = await addDoc(itemsCol, { text: "", checked: false, createdAt: serverTimestamp() });
+        const tryFocus = () => {
+          const el = els.list.querySelector(`.item[data-id="${ref.id}"] input[type="text"]`);
+          if (el) el.focus();
+          else setTimeout(tryFocus, 60);
+        };
+        tryFocus();
+      } catch (err) {
+        console.error("Add item error:", err);
+        alert("Could not add item. Check console and Firestore rules.");
+      }
+    });
+
+    // Clear all items (modal)
+    function openClearModal() { openModal(els.clearModal); }
+    function closeClearModal() { closeModal(els.clearModal); }
+
+    els.clearBtn.addEventListener("click", () => {
+      if (tabs.length === 0) { openNewTabModal(); return; }
+      if (currentIndex === -1) showTab(0);
+      openClearModal();
+    });
+    els.cancelClear.addEventListener("click", closeClearModal);
+
+    els.confirmClear.addEventListener("click", async () => {
+      closeClearModal();
+      if (tabs.length === 0) return;
+      if (currentIndex === -1) showTab(0);
+      const checklistId = tabs[currentIndex].id;
+      const itemsCol = collection(db, "checklists", checklistId, "items");
+      try {
+        const snap = await getDocs(itemsCol);
+        const deletes = [];
+        snap.forEach(docSnap => deletes.push(deleteDoc(doc(db, "checklists", checklistId, "items", docSnap.id))));
+        await Promise.all(deletes);
+        // Reset ETA display after clearing
+        els.estBox.classList.remove("ready");
+        els.estBox.textContent = "Estimated time: <1 min";
+      } catch (err) {
+        console.error("Clear items error:", err);
+      }
+    });
+
+    // Delete tab modal flow
+    function openDeleteTabModal() {
+      if (tabs.length === 0) { openNewTabModal(); return; }
+      if (currentIndex === -1) showTab(0);
+      const tab = tabs[currentIndex];
+      els.deleteTabTitle.textContent = "Delete tab";
+      els.deleteTabMessage.textContent = `Are you sure you want to delete "${tab.name}"?`;
+      openModal(els.deleteTabModal);
+    }
+    function closeDeleteTabModal() { closeModal(els.deleteTabModal); }
+
+    els.deleteTabBtn.addEventListener("click", openDeleteTabModal);
+    els.cancelDeleteTab.addEventListener("click", closeDeleteTabModal);
+
+    els.confirmDeleteTab.addEventListener("click", async () => {
+      closeDeleteTabModal();
+      if (tabs.length === 0) return;
+      if (currentIndex === -1) showTab(0);
+      const tab = tabs[currentIndex];
+      const checklistId = tab.id;
+      try {
+        const itemsCol = collection(db, "checklists", checklistId, "items");
+        const snap = await getDocs(itemsCol);
+        const deletes = [];
+        snap.forEach(docSnap => deletes.push(deleteDoc(doc(db, "checklists", checklistId, "items", docSnap.id))));
+        await Promise.all(deletes);
+        await deleteDoc(doc(db, "checklists", checklistId));
+        const nextIndex = Math.min(currentIndex, tabs.length - 2);
+        currentIndex = nextIndex;
+      } catch (err) {
+        console.error("Delete tab error:", err);
+      }
+    });
+  </script>
+</body>
+</html>
